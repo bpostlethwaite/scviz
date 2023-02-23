@@ -1,5 +1,5 @@
+use crate::comm;
 use anyhow::Result;
-use ringbuf;
 use std::sync::{Arc, Mutex};
 
 const AGG_SAMPLES: usize = 1024;
@@ -41,49 +41,53 @@ impl ArrayView {
 }
 
 struct TriBuf {
-    pub agg: ArrayView,
-    pub raw: ArrayView,
+    agg: ArrayView,
+    raw: ArrayView,
 }
 
-type RingConsumer = ringbuf::consumer::Consumer<[f32; 2], Arc<ringbuf::HeapRb<[f32; 2]>>>;
-
-struct PortBufProcessConfig {
-    rx: crossbeam_channel::Receiver<()>,
-    agg_bin_size: usize,
-    rb: RingConsumer,
-    wait_dur: std::time::Duration,
+pub struct PortBufProcessConfig {
+    pub agg_bin_size: usize,
+    pub rb: comm::RingConsumer,
+    pub wait_dur: std::time::Duration,
+    pub ctx: egui::Context,
 }
 
-struct PortBuf {
+pub struct PortBuf {
     buf: Arc<Mutex<TriBuf>>,
     join_handle: Option<std::thread::JoinHandle<()>>,
+    quit_tx: Option<crossbeam_channel::Sender<()>>,
 }
 
 impl PortBuf {
-    fn new(buf_capacity: usize) -> PortBuf {
+    pub fn new(buf_capacity: usize) -> PortBuf {
         PortBuf {
             buf: Arc::new(Mutex::new(TriBuf {
                 agg: ArrayView::new(buf_capacity),
                 raw: ArrayView::new(buf_capacity),
             })),
             join_handle: None,
+	    quit_tx: None,
         }
     }
 
-    fn process(&mut self, config: PortBufProcessConfig) -> Result<()> {
+    pub fn activate(&mut self, config: PortBufProcessConfig) -> Result<()>
+    {
         let arcbuf = self.buf.clone();
+	let (quit_tx, quit_rx) = crossbeam_channel::bounded(1);
+	self.quit_tx = Some(quit_tx);
+
         let PortBufProcessConfig {
             mut rb,
-            rx,
             agg_bin_size,
             wait_dur,
+            ctx,
         } = config;
 
         let join_handle = std::thread::spawn(move || {
             let mut fft_idx = 0;
             let mut fft_tmp_buf: [f32; FFT_SIG_BUF_SIZE * 2] = [0.0; FFT_SIG_BUF_SIZE * 2];
             loop {
-                match rx.recv_timeout(wait_dur) {
+                match quit_rx.recv_timeout(wait_dur) {
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => (),
                     Ok(_) => break,  // if we get a halt msg
                     Err(_) => break, // or the channel is disconnected
@@ -128,12 +132,25 @@ impl PortBuf {
                 if fft_tmp_buf.len() > FFT_SIG_BUF_SIZE {
                     fft_idx = 0;
                 }
+
+		ctx.request_repaint();
             }
         });
 
         self.join_handle = Some(join_handle);
 
         Ok(())
+    }
+
+    pub fn quit(&mut self) {
+	match self.quit_tx.take() {
+	    Some(quit_tx) => quit_tx.send(()).expect("PortBuf quit tx to send"),
+	    None => (),
+	}
+	match self.join_handle.take() {
+	    Some(join_handle) => join_handle.join().expect("PortBuf join - thread has panicked"),
+	    None => (),
+	}
     }
 }
 
@@ -168,16 +185,15 @@ mod tests {
         // create a ringbuffer of capacity 5
         let rb = ringbuf::HeapRb::new(5);
         let (mut prod, cons) = rb.split();
-        let (tx, rx) = crossbeam_channel::bounded(2);
         let wait_dur = std::time::Duration::from_millis(10);
         let process_config = PortBufProcessConfig {
-            rx,
             rb: cons,
             agg_bin_size: 2,
             wait_dur,
+            ctx: egui::Context::default(),
         };
 
-        pbuf.process(process_config).expect("pbuf to not throw");
+        pbuf.activate(process_config).expect("pbuf to not throw");
 
         let mut test_data = vec![[0.0, 0.0]; 5];
         for i in 1..test_data.len() {
@@ -189,14 +205,7 @@ mod tests {
         // wait some time after the first process will have woken up
         std::thread::sleep(wait_dur + std::time::Duration::from_millis(5));
 
-        // halt the processor
-        tx.send(()).expect("crossbeam_channel halt to send");
-
-        // expect the thread to have halted
-        pbuf.join_handle
-            .expect("join_handle to be Some")
-            .join()
-            .expect("thread to not have panicked");
+	pbuf.quit();
 
         let buf = pbuf.buf.lock().expect("tribuf to unlock");
         assert!(buf.agg.len == 2);
