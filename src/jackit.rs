@@ -1,12 +1,14 @@
 use crate::comm::{self, Jack, Update};
+use crate::app;
 use anyhow::{bail, Result};
 use jack;
 use ringbuf;
 use std::sync::{atomic::AtomicBool, Arc};
+use std::time::Instant;
 
 pub struct JackItConfig {
     pub ringbuf_cycle_size: usize,
-    pub jack_updt_chan: crossbeam_channel::Sender<Update>,
+    pub bus: comm::Bus,
 }
 
 enum JackClient {
@@ -26,7 +28,7 @@ impl JackIt {
         let (client, _status) =
             jack::Client::new(name, jack::ClientOptions::NO_START_SERVER).unwrap();
 
-	// start all ports in a Paused state until a Jack Port Connection is made
+        // start all ports in a Paused state until a Jack Port Connection is made
         let atomics = (0..port_names.len())
             .map(|_| Arc::new(AtomicBool::new(true)))
             .collect();
@@ -76,36 +78,16 @@ impl JackIt {
             .map(|(port, (rb, pause))| PortProc { port, rb, pause })
             .collect();
 
-        let jproc = JProcessor { port_procs };
+        let jproc = JProcessor { bus: config.bus.clone(), port_procs };
 
         // Activate the client, which starts the processing.
         self.client = Some(JackClient::Active(
             client
-                .activate_async(
-                    Notifications {
-                        tx: config.jack_updt_chan,
-                    },
-                    jproc,
-                )
-                .unwrap(),
+                .activate_async(Notifications { bus: config.bus }, jproc)
+                .expect("JackIt.start client.activate_async() to succeed"),
         ));
 
         Ok(rb_cons)
-    }
-
-    pub fn pause_port(&mut self, name: String, pause: bool) -> Result<()> {
-        let maybe_idx = self.port_names.iter().position(|n| name == *n);
-
-        let atomic = match maybe_idx {
-            Some(idx) => self
-                .atomics
-                .get(idx)
-                .expect("jackit pause_port atomics to have idx of matched port"),
-            None => bail!("Could not find port of name {}", name),
-        };
-
-        atomic.store(pause, std::sync::atomic::Ordering::Relaxed);
-        Ok(())
     }
 
     pub fn stop(&mut self) {
@@ -117,6 +99,10 @@ impl JackIt {
             Some(JackClient::Passive(_)) => (),
             None => (),
         }
+    }
+
+    pub fn port_names(&self) -> Vec<String> {
+	self.port_names.clone()
     }
 
     pub fn buffer_size(&self) -> u32 {
@@ -136,6 +122,32 @@ impl JackIt {
         };
         client.sample_rate()
     }
+
+    pub fn update(&mut self, updts: Vec<Update>, state: &mut app::State) {
+        for updt in updts {
+	    match updt {
+		Update::Jack(Jack::Connected {
+                    connected,
+                    port_names,
+		}) => {
+		    for port_name in port_names.into_iter() {
+			if let Some(idx) = self.port_names.iter().position(|n| port_name == *n) {
+			    self.atomics
+				.get(idx)
+				.expect("jackit pause_port atomics to have idx of matched port")
+				.store(connected, std::sync::atomic::Ordering::Relaxed);
+
+			    state.ports_enabled[idx] = connected;
+			} else {
+			    eprintln!("Error: JackIt attempted to locate port {port_name} in {:?}", self.port_names);
+			}
+		    };
+		},
+		Update::Jack(Jack::ProcessTime(dur)) => state.jack_process_time = dur,
+		_ => (),
+            }
+	}
+    }
 }
 
 struct PortProc {
@@ -146,10 +158,13 @@ struct PortProc {
 
 struct JProcessor {
     port_procs: Vec<PortProc>,
+    bus: comm::Bus,
 }
 
 impl jack::ProcessHandler for JProcessor {
     fn process(&mut self, _: &jack::Client, ps: &jack::ProcessScope) -> jack::Control {
+	let now = Instant::now();
+
         let frame_time = ps.last_frame_time();
         let n_frames = ps.n_frames();
         let fs = (0..n_frames).map(|i| frame_time + i);
@@ -163,18 +178,20 @@ impl jack::ProcessHandler for JProcessor {
             .for_each(|pp| {
                 for (x, t) in std::iter::zip(pp.port.as_slice(ps), fs.clone()) {
                     match pp.rb.push([*x, t as f32]) {
-			Ok(()) => (),
-			Err(_) => panic!("Could not push to RingBuffer, buffer full"),
-		    }
+                        Ok(()) => (),
+                        Err(_) => panic!("Could not push to RingBuffer, buffer full"),
+                    }
                 }
             });
 
+	let elapsed = now.elapsed();
+	self.bus.send(Update::Jack(Jack::ProcessTime(elapsed)));
         jack::Control::Continue
     }
 }
 
 struct Notifications {
-    tx: crossbeam_channel::Sender<Update>,
+    bus: comm::Bus,
 }
 
 impl jack::NotificationHandler for Notifications {
@@ -240,12 +257,10 @@ impl jack::NotificationHandler for Notifications {
             .collect();
 
         if port_names.len() > 0 {
-            self.tx
-                .send(Update::Jack(Jack::Connected {
-                    connected: are_connected,
-                    port_names,
-                }))
-                .expect("Jack Notification ports_connected to send")
+            self.bus.send(Update::Jack(Jack::Connected {
+                connected: are_connected,
+                port_names,
+            }))
         }
 
         println!(

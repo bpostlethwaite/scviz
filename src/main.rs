@@ -5,7 +5,6 @@ mod portbuf;
 
 use anyhow::Result;
 use app::TemplateApp;
-use crossbeam_channel;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -34,10 +33,10 @@ fn main() -> Result<()> {
                 jack_sample_rate, jack_buf_size
             );
 
-	    let (jack_tx, _) = crossbeam_channel::bounded(10);
+	    let bus = comm::Bus::new(ctx.clone());
             let ringbuf_consumers = jackit
                 .start(jackit::JackItConfig {
-		    jack_updt_chan: jack_tx,
+		    bus: bus.clone(),
                     ringbuf_cycle_size: comm::RINGBUF_CYCLE_SIZE,
                 })
                 .expect("JackIt to activate");
@@ -55,7 +54,7 @@ fn main() -> Result<()> {
 	    }).collect();
 
 
-            Box::new(TemplateApp::new(jackit, port_bufs))
+            Box::new(TemplateApp::new(bus, jackit, port_bufs))
         }),
     )?;
     Ok(())
