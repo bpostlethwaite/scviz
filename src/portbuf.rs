@@ -1,4 +1,5 @@
-use crate::comm;
+use crate::app;
+use crate::comm::{self, Update};
 use anyhow::Result;
 use std::sync::{Arc, Mutex};
 
@@ -49,54 +50,64 @@ pub struct PortBufProcessConfig {
     pub agg_bin_size: usize,
     pub rb: comm::RingConsumer,
     pub wait_dur: std::time::Duration,
-    pub ctx: egui::Context,
+    pub bus: comm::Bus,
 }
 
 pub struct PortBuf {
+    port_idx: usize,
     buf: Arc<Mutex<TriBuf>>,
     join_handle: Option<std::thread::JoinHandle<()>>,
     quit_tx: Option<crossbeam_channel::Sender<()>>,
 }
 
-impl PortBuf {
-    pub fn new(buf_capacity: usize) -> PortBuf {
+impl PortBuf {    
+    pub fn new(port_idx: usize, buf_capacity: usize) -> PortBuf {
         PortBuf {
+	    port_idx,
             buf: Arc::new(Mutex::new(TriBuf {
                 agg: ArrayView::new(buf_capacity),
                 raw: ArrayView::new(buf_capacity),
             })),
             join_handle: None,
-	    quit_tx: None,
+            quit_tx: None,
         }
     }
 
-    pub fn activate(&mut self, config: PortBufProcessConfig) -> Result<()>
-    {
+    pub fn activate(&mut self, config: PortBufProcessConfig) -> Result<()> {
         let arcbuf = self.buf.clone();
-	let (quit_tx, quit_rx) = crossbeam_channel::bounded(1);
-	self.quit_tx = Some(quit_tx);
+        let (quit_tx, quit_rx) = crossbeam_channel::bounded(1);
+        self.quit_tx = Some(quit_tx);
 
         let PortBufProcessConfig {
             mut rb,
             agg_bin_size,
             wait_dur,
-            ctx,
+            bus,
         } = config;
 
         let join_handle = std::thread::spawn(move || {
             let mut fft_idx = 0;
             let mut fft_tmp_buf: [f32; FFT_SIG_BUF_SIZE * 2] = [0.0; FFT_SIG_BUF_SIZE * 2];
+            let mut timing_diagnostics = comm::TimingDiagnostics::new(3);
             loop {
-                match quit_rx.recv_timeout(wait_dur) {
-                    Err(crossbeam_channel::RecvTimeoutError::Timeout) => (),
-                    Ok(_) => break,  // if we get a halt msg
-                    Err(_) => break, // or the channel is disconnected
+                timing_diagnostics.record();
+                match quit_rx.try_recv() {
+                    Ok(_) => break,
+                    Err(crossbeam_channel::TryRecvError::Disconnected) => break,
+                    Err(crossbeam_channel::TryRecvError::Empty) => (),
                 }
 
                 if rb.len() < agg_bin_size {
-                    continue; // back to recv_timeout
+                    match quit_rx.recv_timeout(wait_dur) {
+                        Ok(_) => break,
+                        Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
+			    println!("PortBuf Timeout");
+			    continue
+			},
+                    }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(5));
+
                 let mut n_samples = rb.len();
                 // Prevent fft_buf overflow
                 if rb.len() >= FFT_SIG_BUF_SIZE * 2 {
@@ -132,8 +143,12 @@ impl PortBuf {
                 if fft_tmp_buf.len() > FFT_SIG_BUF_SIZE {
                     fft_idx = 0;
                 }
-
-		ctx.request_repaint();
+                if timing_diagnostics.done() {
+                    bus.send(Update::PortBuf(comm::PortBuf::TimingDiagnostics(
+                        timing_diagnostics,
+                    )))
+                }
+                bus.request_repaint();
             }
         });
 
@@ -143,14 +158,28 @@ impl PortBuf {
     }
 
     pub fn quit(&mut self) {
-	match self.quit_tx.take() {
-	    Some(quit_tx) => quit_tx.send(()).expect("PortBuf quit tx to send"),
-	    None => (),
-	}
-	match self.join_handle.take() {
-	    Some(join_handle) => join_handle.join().expect("PortBuf join - thread has panicked"),
-	    None => (),
-	}
+        match self.quit_tx.take() {
+            Some(quit_tx) => quit_tx.send(()).expect("PortBuf quit tx to send"),
+            None => (),
+        }
+        match self.join_handle.take() {
+            Some(join_handle) => join_handle
+                .join()
+                .expect("PortBuf join - thread has panicked"),
+            None => (),
+        }
+        println!("PortBuf Stopped");
+    }
+
+    pub fn update(&self, updts: &Vec<Update>, state: &mut app::State) {
+        for updt in updts {
+            match updt {
+                Update::PortBuf(comm::PortBuf::TimingDiagnostics(d)) => {
+                    state.ports[self.port_idx].timing  = *d
+                }
+                _ => (),
+            }
+        }
     }
 }
 
@@ -180,7 +209,7 @@ mod tests {
         // set portbuf capacity at 5 and agg_bin_size at 2
         // then write 5 values at once. portbuf should pull 2
         // values each loop and leave the 5th value.
-        let mut pbuf = PortBuf::new(4);
+        let mut pbuf = PortBuf::new(0, 4);
 
         // create a ringbuffer of capacity 5
         let rb = ringbuf::HeapRb::new(5);
@@ -190,7 +219,7 @@ mod tests {
             rb: cons,
             agg_bin_size: 2,
             wait_dur,
-            ctx: egui::Context::default(),
+            bus: comm::Bus::new(egui::Context::default()),
         };
 
         pbuf.activate(process_config).expect("pbuf to not throw");
@@ -205,7 +234,7 @@ mod tests {
         // wait some time after the first process will have woken up
         std::thread::sleep(wait_dur + std::time::Duration::from_millis(5));
 
-	pbuf.quit();
+        pbuf.quit();
 
         let buf = pbuf.buf.lock().expect("tribuf to unlock");
         assert!(buf.agg.len == 2);

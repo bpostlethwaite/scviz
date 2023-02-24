@@ -1,10 +1,9 @@
-use crate::comm::{self, Jack, Update};
 use crate::app;
+use crate::comm::{self, Jack, Update};
 use anyhow::{bail, Result};
 use jack;
 use ringbuf;
 use std::sync::{atomic::AtomicBool, Arc};
-use std::time::Instant;
 
 pub struct JackItConfig {
     pub ringbuf_cycle_size: usize,
@@ -71,6 +70,12 @@ impl JackIt {
             })
             .collect();
 
+        // we passed in nic names, we want full port names for later matching
+        self.port_names = ports
+            .iter()
+            .map(|p| p.name().expect("Jackit Port.name() to return full name"))
+            .collect();
+
         // consume ringbufs and cloned atomics and ports
         let port_procs = ports
             .into_iter()
@@ -78,7 +83,11 @@ impl JackIt {
             .map(|(port, (rb, pause))| PortProc { port, rb, pause })
             .collect();
 
-        let jproc = JProcessor { bus: config.bus.clone(), port_procs };
+        let jproc = JProcessor::new(
+            port_procs,
+            config.bus.clone(),
+            comm::TIMING_DIAGNOSTIC_CYCLES,
+        );
 
         // Activate the client, which starts the processing.
         self.client = Some(JackClient::Active(
@@ -93,7 +102,11 @@ impl JackIt {
     pub fn stop(&mut self) {
         match self.client.take() {
             Some(JackClient::Active(ac)) => match ac.deactivate() {
-                Ok((client, ..)) => self.client = Some(JackClient::Passive(client)),
+                Ok((client, ..)) => {
+                    self.client = Some(JackClient::Passive(client));
+                    println!("Deactivating Jack Client")
+                }
+
                 Err(_) => panic!("Jack Client in bad state, no recoverable process implemented"),
             },
             Some(JackClient::Passive(_)) => (),
@@ -102,7 +115,7 @@ impl JackIt {
     }
 
     pub fn port_names(&self) -> Vec<String> {
-	self.port_names.clone()
+        self.port_names.clone()
     }
 
     pub fn buffer_size(&self) -> u32 {
@@ -123,30 +136,33 @@ impl JackIt {
         client.sample_rate()
     }
 
-    pub fn update(&mut self, updts: Vec<Update>, state: &mut app::State) {
+    pub fn update(&mut self, updts: &Vec<Update>, state: &mut app::State) {
         for updt in updts {
-	    match updt {
-		Update::Jack(Jack::Connected {
+            match updt {
+                Update::Jack(Jack::Connected {
                     connected,
                     port_names,
-		}) => {
-		    for port_name in port_names.into_iter() {
-			if let Some(idx) = self.port_names.iter().position(|n| port_name == *n) {
-			    self.atomics
-				.get(idx)
-				.expect("jackit pause_port atomics to have idx of matched port")
-				.store(connected, std::sync::atomic::Ordering::Relaxed);
+                }) => {
+                    for port_name in port_names.into_iter() {
+                        if let Some(idx) = self.port_names.iter().position(|n| port_name == n) {
+                            self.atomics
+                                .get(idx)
+                                .expect("jackit pause_port atomics to have idx of matched port")
+                                .store(*connected, std::sync::atomic::Ordering::Relaxed);
 
-			    state.ports_enabled[idx] = connected;
-			} else {
-			    eprintln!("Error: JackIt attempted to locate port {port_name} in {:?}", self.port_names);
-			}
-		    };
-		},
-		Update::Jack(Jack::ProcessTime(dur)) => state.jack_process_time = dur,
-		_ => (),
+                            state.ports[idx].enabled = *connected;
+                        } else {
+                            eprintln!(
+                                "Error: JackIt attempted to locate port {port_name} in {:?}",
+                                self.port_names
+                            );
+                        }
+                    }
+                }
+                Update::Jack(Jack::TimingDiagnostics(d)) => state.jack_process_diagnostics = *d,
+                _ => (),
             }
-	}
+        }
     }
 }
 
@@ -159,11 +175,22 @@ struct PortProc {
 struct JProcessor {
     port_procs: Vec<PortProc>,
     bus: comm::Bus,
+    timing_diagnostics: comm::TimingDiagnostics,
+}
+
+impl JProcessor {
+    fn new(port_procs: Vec<PortProc>, bus: comm::Bus, diagnostic_proc_cycles: u32) -> JProcessor {
+        JProcessor {
+            port_procs,
+            bus,
+            timing_diagnostics: comm::TimingDiagnostics::new(diagnostic_proc_cycles),
+        }
+    }
 }
 
 impl jack::ProcessHandler for JProcessor {
     fn process(&mut self, _: &jack::Client, ps: &jack::ProcessScope) -> jack::Control {
-	let now = Instant::now();
+        self.timing_diagnostics.record();
 
         let frame_time = ps.last_frame_time();
         let n_frames = ps.n_frames();
@@ -184,8 +211,12 @@ impl jack::ProcessHandler for JProcessor {
                 }
             });
 
-	let elapsed = now.elapsed();
-	self.bus.send(Update::Jack(Jack::ProcessTime(elapsed)));
+        if self.timing_diagnostics.done() {
+            self.bus.send(Update::Jack(Jack::TimingDiagnostics(
+                self.timing_diagnostics,
+            )));
+        }
+
         jack::Control::Continue
     }
 }

@@ -20,7 +20,7 @@ fn main() -> Result<()> {
                 .map(|s| s.to_string())
                 .collect();
 
-	    let mut jackit = jackit::JackIt::new("scviz", port_names.clone());
+            let mut jackit = jackit::JackIt::new("scviz", port_names.clone());
 
             // size of the buffer jack is configured to hand out each process cycle
             let jack_buf_size = jackit.buffer_size();
@@ -33,26 +33,30 @@ fn main() -> Result<()> {
                 jack_sample_rate, jack_buf_size
             );
 
-	    let bus = comm::Bus::new(ctx.clone());
+            let bus = comm::Bus::new(ctx.clone());
             let ringbuf_consumers = jackit
                 .start(jackit::JackItConfig {
-		    bus: bus.clone(),
+                    bus: bus.clone(),
                     ringbuf_cycle_size: comm::RINGBUF_CYCLE_SIZE,
                 })
                 .expect("JackIt to activate");
 
-	    // consume ring buffers in activated port_bufs
-	    let port_bufs: Vec<portbuf::PortBuf> = ringbuf_consumers.into_iter().map(|rb| {
-		let mut pb = portbuf::PortBuf::new(comm::PORT_BUF_SIZE);
-		pb.activate(portbuf::PortBufProcessConfig {
-                    rb,
-                    agg_bin_size: jack_buf_size as usize, // aggregate every jack process buffer
-                    wait_dur: comm::PORT_BUF_WAIT_DUR,
-                    ctx: ctx.clone(),
-                }).expect("PortBuf Activate to Succeed");
-		pb
-	    }).collect();
-
+            // consume ring buffers in activated port_bufs
+            let port_bufs: Vec<portbuf::PortBuf> = ringbuf_consumers
+                .into_iter()
+                .enumerate()
+                .map(|(idx, rb)| {
+                    let mut pb = portbuf::PortBuf::new(idx, comm::PORT_BUF_SIZE);
+                    pb.activate(portbuf::PortBufProcessConfig {
+                        rb,
+                        agg_bin_size: jack_buf_size as usize, // aggregate every jack process buffer
+                        wait_dur: comm::PORT_BUF_WAIT_DUR,
+                        bus: bus.clone(),
+                    })
+                    .expect("PortBuf Activate to Succeed");
+                    pb
+                })
+                .collect();
 
             Box::new(TemplateApp::new(bus, jackit, port_bufs))
         }),

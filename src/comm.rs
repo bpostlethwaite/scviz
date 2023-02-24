@@ -15,6 +15,9 @@ pub const PORT_BUF_WAIT_DUR: std::time::Duration = std::time::Duration::from_mil
 /// The size of the main channel bus
 pub const CHANNEL_BUS_SIZE: usize = 10;
 
+/// Number of Process Cycles to include in diagnostic aggregation
+pub const TIMING_DIAGNOSTIC_CYCLES: u32 = 10;
+
 // pub const AUDIO_BUFF_SIZE: usize = 8192;
 // pub const FFT_MAX_SIZE: usize = 8192;
 // pub const FFT_MAX_BUFF_SIZE: usize = 4097;
@@ -25,6 +28,7 @@ pub const CHANNEL_BUS_SIZE: usize = 10;
 #[derive(Debug)]
 pub enum Update {
     Jack(Jack),
+    PortBuf(PortBuf),
 }
 
 #[derive(Debug)]
@@ -33,7 +37,12 @@ pub enum Jack {
         connected: bool,
         port_names: Vec<String>,
     },
-    ProcessTime(std::time::Duration),
+    TimingDiagnostics(TimingDiagnostics),
+}
+
+#[derive(Debug)]
+pub enum PortBuf {
+    TimingDiagnostics(TimingDiagnostics),
 }
 
 #[derive(Clone)]
@@ -51,16 +60,62 @@ impl Bus {
 
     pub fn send(&self, updt: Update) {
         self.tx.send(updt).expect("Bus.send to succeed");
-	self.ctx.request_repaint();
+        self.ctx.request_repaint();
     }
 
     pub fn updates(&self, debug: bool) -> Vec<Update> {
-	let updts: Vec<Update> = self.rx.try_iter().collect();
-	if debug {
-	    for updt in updts.iter() {
-		println!("{:?}", updt);
-	    }
-	}
-	updts
+        let updts: Vec<Update> = self.rx.try_iter().collect();
+        if debug {
+            for updt in updts.iter() {
+                println!("{:?}", updt);
+            }
+        }
+        updts
+    }
+
+    pub fn request_repaint(&self) {
+	self.ctx.request_repaint();
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct TimingDiagnostics {
+    diagnostic_proc_cycles: u32,
+    diagnostic_proc_cycle: u32,
+    now: std::time::Instant,
+    pub avg_diag_cycle_time: std::time::Duration,
+    pub max_diag_cycle_time: std::time::Duration,
+    pub min_diag_cycle_time: std::time::Duration,
+}
+
+impl TimingDiagnostics {
+    pub fn new(diagnostic_proc_cycles: u32) -> Self {
+        TimingDiagnostics {
+            diagnostic_proc_cycles,
+            diagnostic_proc_cycle: 0,
+            now: std::time::Instant::now(),
+            avg_diag_cycle_time: std::time::Duration::ZERO,
+            max_diag_cycle_time: std::time::Duration::ZERO,
+            min_diag_cycle_time: std::time::Duration::MAX,
+        }
+    }
+
+    pub fn record(&mut self) {
+        if self.diagnostic_proc_cycle == self.diagnostic_proc_cycles {
+            self.diagnostic_proc_cycle = 0;
+            self.avg_diag_cycle_time = std::time::Duration::ZERO;
+            self.max_diag_cycle_time = std::time::Duration::ZERO;
+            self.min_diag_cycle_time = std::time::Duration::MAX;
+        }
+        self.diagnostic_proc_cycle += 1;
+        self.now = std::time::Instant::now();
+    }
+
+    pub fn done(&mut self) -> bool {
+        let elapsed = self.now.elapsed();
+        self.avg_diag_cycle_time += elapsed / self.diagnostic_proc_cycles;
+        self.max_diag_cycle_time = self.max_diag_cycle_time.max(elapsed);
+        self.min_diag_cycle_time = self.min_diag_cycle_time.min(elapsed);
+        self.diagnostic_proc_cycle == self.diagnostic_proc_cycles
     }
 }
