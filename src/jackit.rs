@@ -29,7 +29,7 @@ impl JackIt {
 
         // start all ports in a Paused state until a Jack Port Connection is made
         let atomics = (0..port_names.len())
-            .map(|_| Arc::new(AtomicBool::new(true)))
+            .map(|_| Arc::new(AtomicBool::new(false)))
             .collect();
 
         JackIt {
@@ -80,7 +80,7 @@ impl JackIt {
         let port_procs = ports
             .into_iter()
             .zip(rb_prods.into_iter().zip(self.atomics.clone().into_iter()))
-            .map(|(port, (rb, pause))| PortProc { port, rb, pause })
+            .map(|(port, (rb, enabled))| PortProc { port, rb, enabled })
             .collect();
 
         let jproc = JProcessor::new(
@@ -149,7 +149,7 @@ impl JackIt {
                                 .get(idx)
                                 .expect("jackit pause_port atomics to have idx of matched port")
                                 .store(*connected, std::sync::atomic::Ordering::Relaxed);
-
+			    println!("Setting {} as {}", port_name, *connected);
                             state.ports[idx].enabled = *connected;
                         } else {
                             eprintln!(
@@ -169,7 +169,7 @@ impl JackIt {
 struct PortProc {
     port: jack::Port<jack::AudioIn>,
     rb: comm::RingProducer,
-    pause: Arc<AtomicBool>,
+    enabled: Arc<AtomicBool>,
 }
 
 struct JProcessor {
@@ -200,7 +200,7 @@ impl jack::ProcessHandler for JProcessor {
             .iter_mut()
             .filter(|pp| {
                 // don't process any ports set to pause
-                !pp.pause.load(std::sync::atomic::Ordering::Relaxed)
+                pp.enabled.load(std::sync::atomic::Ordering::Relaxed)
             })
             .for_each(|pp| {
                 for (x, t) in std::iter::zip(pp.port.as_slice(ps), fs.clone()) {

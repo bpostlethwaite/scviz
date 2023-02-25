@@ -15,7 +15,7 @@ fn main() -> Result<()> {
         Box::new(|cc| {
             let ctx = cc.egui_ctx.clone();
 
-            let port_names: Vec<String> = vec!["in_1", "in_2", "in_3"]
+            let port_names: Vec<String> = vec!["in_1"] //, "in_2", "in_3"]
                 .iter()
                 .map(|s| s.to_string())
                 .collect();
@@ -25,11 +25,12 @@ fn main() -> Result<()> {
             // size of the buffer jack is configured to hand out each process cycle
             let jack_buf_size = jackit.buffer_size();
 
-            // sample rate jack is configured to run at
+            // sample rate jack: samples / second
             let jack_sample_rate = jackit.sample_rate();
+            let sample_dt = 1 / jack_sample_rate;
 
             println!(
-                "jack_sample_rate = {}  jack_buffer_size = {}",
+                "jack_sample_rate = {}, jack_buffer_size = {}, jack_sample_dt = {}",
                 jack_sample_rate, jack_buf_size
             );
 

@@ -10,7 +10,7 @@ pub const RINGBUF_CYCLE_SIZE: usize = 10;
 pub const PORT_BUF_SIZE: usize = 65536;
 
 /// How long should the port buff wait between ring buffer reads
-pub const PORT_BUF_WAIT_DUR: std::time::Duration = std::time::Duration::from_millis(10);
+pub const PORT_BUF_WAIT_DUR: std::time::Duration = std::time::Duration::from_millis(1);
 
 /// The size of the main channel bus
 pub const CHANNEL_BUS_SIZE: usize = 10;
@@ -107,7 +107,6 @@ impl TimingDiagnostics {
             self.max_diag_cycle_time = std::time::Duration::ZERO;
             self.min_diag_cycle_time = std::time::Duration::MAX;
         }
-        self.diagnostic_proc_cycle += 1;
         self.now = std::time::Instant::now();
     }
 
@@ -116,6 +115,7 @@ impl TimingDiagnostics {
         self.avg_diag_cycle_time += elapsed / self.diagnostic_proc_cycles;
         self.max_diag_cycle_time = self.max_diag_cycle_time.max(elapsed);
         self.min_diag_cycle_time = self.min_diag_cycle_time.min(elapsed);
+	self.diagnostic_proc_cycle += 1;
         self.diagnostic_proc_cycle == self.diagnostic_proc_cycles
     }
 }

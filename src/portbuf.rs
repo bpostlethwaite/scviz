@@ -60,7 +60,7 @@ pub struct PortBuf {
     quit_tx: Option<crossbeam_channel::Sender<()>>,
 }
 
-impl PortBuf {    
+impl PortBuf {
     pub fn new(port_idx: usize, buf_capacity: usize) -> PortBuf {
         PortBuf {
 	    port_idx,
@@ -88,7 +88,7 @@ impl PortBuf {
         let join_handle = std::thread::spawn(move || {
             let mut fft_idx = 0;
             let mut fft_tmp_buf: [f32; FFT_SIG_BUF_SIZE * 2] = [0.0; FFT_SIG_BUF_SIZE * 2];
-            let mut timing_diagnostics = comm::TimingDiagnostics::new(3);
+            let mut timing_diagnostics = comm::TimingDiagnostics::new(comm::TIMING_DIAGNOSTIC_CYCLES);
             loop {
                 timing_diagnostics.record();
                 match quit_rx.try_recv() {
@@ -102,7 +102,6 @@ impl PortBuf {
                         Ok(_) => break,
                         Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
                         Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-			    println!("PortBuf Timeout");
 			    continue
 			},
                     }
@@ -147,8 +146,9 @@ impl PortBuf {
                     bus.send(Update::PortBuf(comm::PortBuf::TimingDiagnostics(
                         timing_diagnostics,
                     )))
-                }
-                bus.request_repaint();
+                } else {
+                    bus.request_repaint();
+		}
             }
         });
 

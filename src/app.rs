@@ -65,8 +65,8 @@ impl eframe::App for TemplateApp {
         for pb in &self.port_bufs {
             pb.update(&updates, state);
         }
-        egui::SidePanel::right("Port Status").show(ctx, |ui| {
-            ui.heading("Status");
+        egui::SidePanel::right("Diagnostics").show(ctx, |ui| {
+            ui.heading("Port Connections");
             for port_state in &state.ports {
                 let PortState { name, enabled, .. } = port_state;
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
@@ -97,7 +97,7 @@ impl eframe::App for TemplateApp {
             ui.heading("PortBuf Process Diagnostics");
             for port_state in &state.ports {
                 let PortState { name, timing, .. } = port_state;
-		
+
                 ui.label(name);
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
                     ui.label("Avg Process Time: ");
