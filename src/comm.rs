@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
-pub type RingProducer = ringbuf::producer::Producer<[f32; 2], Arc<ringbuf::HeapRb<[f32; 2]>>>;
-pub type RingConsumer = ringbuf::consumer::Consumer<[f32; 2], Arc<ringbuf::HeapRb<[f32; 2]>>>;
+pub type Point = [f64; 2];
+pub type RingProducer = ringbuf::producer::Producer<Point, Arc<ringbuf::HeapRb<Point>>>;
+pub type RingConsumer = ringbuf::consumer::Consumer<Point, Arc<ringbuf::HeapRb<Point>>>;
 
 /// How many Jack process cycles can fit into the ringbuf
 pub const RINGBUF_CYCLE_SIZE: usize = 10;

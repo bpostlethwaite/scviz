@@ -80,33 +80,42 @@ impl eframe::App for TemplateApp {
             }
             ui.separator();
             ui.heading("Jack Process Diagnostics");
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                ui.label("Avg Process Time: ");
-                ui.label(format!(
-                    "{:?}",
-                    state.jack_process_diagnostics.avg_diag_cycle_time
-                ));
-            });
-            ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                ui.label("Max Process Time: ");
-                ui.label(format!(
-                    "{:?}",
-                    state.jack_process_diagnostics.max_diag_cycle_time
-                ));
-            });
+            ui.label(format!(
+                "Avg Process Time: {:?}",
+                state.jack_process_diagnostics.avg_diag_cycle_time
+            ));
+            ui.label(format!(
+                "Max Process Time: {:?}",
+                state.jack_process_diagnostics.max_diag_cycle_time
+            ));
+
             ui.heading("PortBuf Process Diagnostics");
             for port_state in &state.ports {
                 let PortState { name, timing, .. } = port_state;
-
                 ui.label(name);
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                    ui.label("Avg Process Time: ");
-                    ui.label(format!("{:?}", timing.avg_diag_cycle_time));
-                });
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-                    ui.label("Max Process Time: ");
-                    ui.label(format!("{:?}", timing.max_diag_cycle_time));
-                });
+                ui.label(format!(
+                    "Avg Process Time: {:?}",
+                    timing.avg_diag_cycle_time
+                ));
+                ui.label(format!(
+                    "Max Process Time: {:?}",
+                    timing.max_diag_cycle_time
+                ));
+            }
+
+            ui.heading("PortBuf Capacity");
+            for (port_buf, PortState { name, .. }) in std::iter::zip(&self.port_bufs, &state.ports)
+            {
+                ui.label(name);
+                let (agg, raw) = port_buf.capacity();
+		ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                    ui.label("Agg: ");
+                    ui.add(egui::widgets::ProgressBar::new(agg as f32 / comm::PORT_BUF_SIZE as f32));
+		});
+		ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                    ui.label("Raw: ");
+                    ui.add(egui::widgets::ProgressBar::new(raw as f32 / comm::PORT_BUF_SIZE as f32));
+		});
             }
         });
 

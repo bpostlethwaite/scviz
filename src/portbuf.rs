@@ -1,5 +1,5 @@
 use crate::app;
-use crate::comm::{self, Update};
+use crate::comm::{self, Update, Point};
 use anyhow::Result;
 use std::sync::{Arc, Mutex};
 
@@ -12,7 +12,7 @@ const FFT_SPEC_BUF_SIZE: usize = 4097;
 #[derive(Debug)]
 struct ArrayView {
     len: usize,
-    arr: Vec<[f64; 2]>,
+    arr: Vec<Point>,
 }
 
 impl ArrayView {
@@ -23,21 +23,29 @@ impl ArrayView {
         }
     }
 
-    fn push(&mut self, x: f64, y: f64) {
+    fn push(&mut self, point: Point) {
         if self.len == self.arr.capacity() {
             self.len = 0;
         }
-        self.arr[self.len] = [x, y];
+        self.arr[self.len] = point;
         self.len += 1;
     }
 
-    fn get_last(&mut self, n: usize) -> &[[f64; 2]] {
+    fn get_last(&mut self, n: usize) -> &[Point] {
         if n > self.len {
             &self.arr[0..self.len]
         } else {
             let start = self.len - n;
             &self.arr[start..self.len]
         }
+    }
+
+    fn size(&self) -> usize {
+	self.arr.capacity()
+    }
+
+    fn len(&self) -> usize {
+	self.len
     }
 }
 
@@ -54,8 +62,8 @@ pub struct PortBufProcessConfig {
 }
 
 pub struct PortBuf {
-    port_idx: usize,
     buf: Arc<Mutex<TriBuf>>,
+    port_idx: usize,
     join_handle: Option<std::thread::JoinHandle<()>>,
     quit_tx: Option<crossbeam_channel::Sender<()>>,
 }
@@ -87,7 +95,7 @@ impl PortBuf {
 
         let join_handle = std::thread::spawn(move || {
             let mut fft_idx = 0;
-            let mut fft_tmp_buf: [f32; FFT_SIG_BUF_SIZE * 2] = [0.0; FFT_SIG_BUF_SIZE * 2];
+            let mut fft_tmp_buf: [f64; FFT_SIG_BUF_SIZE * 2] = [0.0; FFT_SIG_BUF_SIZE * 2];
             let mut timing_diagnostics = comm::TimingDiagnostics::new(comm::TIMING_DIAGNOSTIC_CYCLES);
             loop {
                 timing_diagnostics.record();
@@ -121,19 +129,17 @@ impl PortBuf {
                         Ok(buf) => buf,
                         Err(_) => break,
                     };
-                    // Take only an amount that is both divisible by agg_sample sizes, and less than
-                    // FFT_SIG_BUFF_SIZE*2 leave rest for next process loop.
-                    for (idx, [x, t]) in rb.pop_iter().take(n_samples).enumerate() {
-                        sum += x;
+                    for (idx, point) in rb.pop_iter().take(n_samples).enumerate() {
+                        sum += point[0];
                         // aggregate every agg_bin_size
                         // TODO need to compute agg t by looking at current frame time and adding
                         // idx sample times - 0.5 agg_bin_size samples to it.
                         if ((idx + 1) % agg_bin_size) == 0 {
-                            buf.agg.push(sum as f64 / agg_bin_size as f64, t as f64);
+                            buf.agg.push([sum / agg_bin_size as f64, point[1]]);
                             sum = 0.0;
                         }
-                        buf.raw.push(x as f64, t as f64);
-                        fft_tmp_buf[fft_idx] = x;
+                        buf.raw.push(point);
+                        fft_tmp_buf[fft_idx] = point[0];
                         fft_idx += 1;
                     }
                 }
@@ -171,6 +177,11 @@ impl PortBuf {
         println!("PortBuf Stopped");
     }
 
+    pub fn capacity(&self) -> (usize, usize) {
+	let buf = self.buf.lock().expect("PortBuf.capcity lock to not be poisoned");
+	(buf.agg.len(), buf.raw.len())
+    }
+
     pub fn update(&self, updts: &Vec<Update>, state: &mut app::State) {
         for updt in updts {
             match updt {
@@ -190,13 +201,13 @@ mod tests {
     #[test]
     fn array_view() {
         let mut av = ArrayView::new(2);
-        av.push(2.0, 2.0);
-        av.push(3.0, 3.0);
+        av.push([2.0, 2.0]);
+        av.push([3.0, 3.0]);
 
         let points = av.get_last(2);
         assert!(points.len() == 2);
 
-        av.push(4.0, 4.0);
+        av.push([4.0, 4.0]);
 
         let points = av.get_last(2);
         assert!(points.len() == 1);
@@ -226,8 +237,8 @@ mod tests {
 
         let mut test_data = vec![[0.0, 0.0]; 5];
         for i in 1..test_data.len() {
-            test_data[i][0] = (i * 2) as f32;
-            test_data[i][1] = i as f32;
+            test_data[i][0] = (i * 2) as f64;
+            test_data[i][1] = i as f64;
         }
         prod.push_slice(&test_data);
 

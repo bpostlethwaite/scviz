@@ -1,5 +1,5 @@
 use crate::app;
-use crate::comm::{self, Jack, Update};
+use crate::comm::{self, Jack, Update, Point};
 use anyhow::{bail, Result};
 use jack;
 use ringbuf;
@@ -50,7 +50,7 @@ impl JackIt {
         let mut rb_cons = vec![];
 
         for _ in 0..self.port_names.len() {
-            let ring_buf = ringbuf::HeapRb::<[f32; 2]>::new(
+            let ring_buf = ringbuf::HeapRb::<Point>::new(
                 (client.buffer_size() as usize) * config.ringbuf_cycle_size,
             );
             let (prod, cons) = ring_buf.split();
@@ -149,7 +149,6 @@ impl JackIt {
                                 .get(idx)
                                 .expect("jackit pause_port atomics to have idx of matched port")
                                 .store(*connected, std::sync::atomic::Ordering::Relaxed);
-			    println!("Setting {} as {}", port_name, *connected);
                             state.ports[idx].enabled = *connected;
                         } else {
                             eprintln!(
@@ -204,7 +203,7 @@ impl jack::ProcessHandler for JProcessor {
             })
             .for_each(|pp| {
                 for (x, t) in std::iter::zip(pp.port.as_slice(ps), fs.clone()) {
-                    match pp.rb.push([*x, t as f32]) {
+                    match pp.rb.push([*x as f64, t as f64]) {
                         Ok(()) => (),
                         Err(_) => panic!("Could not push to RingBuffer, buffer full"),
                     }

@@ -31,7 +31,7 @@ fn main() -> Result<()> {
 
             println!(
                 "jack_sample_rate = {}, jack_buffer_size = {}, jack_sample_dt = {}",
-                jack_sample_rate, jack_buf_size
+                jack_sample_rate, jack_buf_size, sample_dt
             );
 
             let bus = comm::Bus::new(ctx.clone());
