@@ -42,12 +42,15 @@ fn main() -> Result<()> {
                 })
                 .expect("JackIt to activate");
 
+            let port_names = jackit.port_names();
             // consume ring buffers in activated port_bufs
             let port_bufs: Vec<portbuf::PortBuf> = ringbuf_consumers
                 .into_iter()
                 .enumerate()
                 .map(|(idx, rb)| {
-                    let mut pb = portbuf::PortBuf::new(idx, comm::PORT_BUF_SIZE);
+                    let name = port_names[idx].clone();
+                    let enabled = false;
+                    let mut pb = portbuf::PortBuf::new(idx, name, enabled, comm::PORT_BUF_SIZE);
                     pb.activate(portbuf::PortBufProcessConfig {
                         rb,
                         agg_bin_size: jack_buf_size as usize, // aggregate every jack process buffer

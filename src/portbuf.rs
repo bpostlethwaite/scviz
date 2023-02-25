@@ -1,5 +1,4 @@
-use crate::app;
-use crate::comm::{self, Update, Point};
+use crate::comm::{self, Point, TimingDiagnostics, Update};
 use anyhow::Result;
 use std::sync::{Arc, Mutex};
 
@@ -41,11 +40,11 @@ impl ArrayView {
     }
 
     fn size(&self) -> usize {
-	self.arr.capacity()
+        self.arr.capacity()
     }
 
     fn len(&self) -> usize {
-	self.len
+        self.len
     }
 }
 
@@ -62,6 +61,9 @@ pub struct PortBufProcessConfig {
 }
 
 pub struct PortBuf {
+    pub name: String,
+    pub timing: TimingDiagnostics,
+    pub enabled: bool,
     buf: Arc<Mutex<TriBuf>>,
     port_idx: usize,
     join_handle: Option<std::thread::JoinHandle<()>>,
@@ -69,9 +71,12 @@ pub struct PortBuf {
 }
 
 impl PortBuf {
-    pub fn new(port_idx: usize, buf_capacity: usize) -> PortBuf {
+    pub fn new(port_idx: usize, name: String, enabled: bool, buf_capacity: usize) -> PortBuf {
         PortBuf {
-	    port_idx,
+            name,
+            enabled,
+            port_idx,
+            timing: TimingDiagnostics::new(0),
             buf: Arc::new(Mutex::new(TriBuf {
                 agg: ArrayView::new(buf_capacity),
                 raw: ArrayView::new(buf_capacity),
@@ -93,12 +98,16 @@ impl PortBuf {
             bus,
         } = config;
 
+        let port_idx = self.port_idx;
+
         let join_handle = std::thread::spawn(move || {
             let mut fft_idx = 0;
             let mut fft_tmp_buf: [f64; FFT_SIG_BUF_SIZE * 2] = [0.0; FFT_SIG_BUF_SIZE * 2];
-            let mut timing_diagnostics = comm::TimingDiagnostics::new(comm::TIMING_DIAGNOSTIC_CYCLES);
+            let mut timing_diagnostics = TimingDiagnostics::new(comm::TIMING_DIAGNOSTIC_CYCLES);
             loop {
-                timing_diagnostics.record();
+                if cfg!(debug_assertions) {
+                    timing_diagnostics.record()
+                };
                 match quit_rx.try_recv() {
                     Ok(_) => break,
                     Err(crossbeam_channel::TryRecvError::Disconnected) => break,
@@ -109,9 +118,7 @@ impl PortBuf {
                     match quit_rx.recv_timeout(wait_dur) {
                         Ok(_) => break,
                         Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {
-			    continue
-			},
+                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
                     }
                 }
 
@@ -148,13 +155,19 @@ impl PortBuf {
                 if fft_tmp_buf.len() > FFT_SIG_BUF_SIZE {
                     fft_idx = 0;
                 }
-                if timing_diagnostics.done() {
-                    bus.send(Update::PortBuf(comm::PortBuf::TimingDiagnostics(
-                        timing_diagnostics,
-                    )))
+
+                if cfg!(debug_assertions) {
+                    if timing_diagnostics.done() {
+                        bus.send(Update::PortBuf(comm::PortBuf::TimingDiagnostics {
+                            timing: timing_diagnostics,
+                            port_idx,
+                        }))
+                    } else {
+                        bus.request_repaint();
+                    }
                 } else {
                     bus.request_repaint();
-		}
+                }
             }
         });
 
@@ -178,15 +191,30 @@ impl PortBuf {
     }
 
     pub fn capacity(&self) -> (usize, usize) {
-	let buf = self.buf.lock().expect("PortBuf.capcity lock to not be poisoned");
-	(buf.agg.len(), buf.raw.len())
+        let buf = self
+            .buf
+            .lock()
+            .expect("PortBuf.capcity lock to not be poisoned");
+        (buf.agg.len(), buf.raw.len())
     }
 
-    pub fn update(&self, updts: &Vec<Update>, state: &mut app::State) {
+    pub fn update(&mut self, updts: &Vec<Update>) {
         for updt in updts {
             match updt {
-                Update::PortBuf(comm::PortBuf::TimingDiagnostics(d)) => {
-                    state.ports[self.port_idx].timing  = *d
+                Update::PortBuf(comm::PortBuf::TimingDiagnostics { port_idx, timing }) => {
+                    if port_idx == &self.port_idx {
+                        self.timing = *timing;
+                    }
+                }
+                Update::Jack(comm::Jack::Connected {
+                    connected,
+                    port_names,
+                }) => {
+                    for port_name in port_names.into_iter() {
+                        if port_name == &self.name {
+                            self.enabled = *connected;
+                        }
+                    }
                 }
                 _ => (),
             }
@@ -220,7 +248,7 @@ mod tests {
         // set portbuf capacity at 5 and agg_bin_size at 2
         // then write 5 values at once. portbuf should pull 2
         // values each loop and leave the 5th value.
-        let mut pbuf = PortBuf::new(0, 4);
+        let mut pbuf = PortBuf::new(0, "name".to_owned(), true, 4);
 
         // create a ringbuffer of capacity 5
         let rb = ringbuf::HeapRb::new(5);

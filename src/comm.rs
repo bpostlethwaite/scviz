@@ -43,7 +43,10 @@ pub enum Jack {
 
 #[derive(Debug)]
 pub enum PortBuf {
-    TimingDiagnostics(TimingDiagnostics),
+    TimingDiagnostics {
+        port_idx: usize,
+        timing: TimingDiagnostics,
+    },
 }
 
 #[derive(Clone)]
@@ -75,7 +78,7 @@ impl Bus {
     }
 
     pub fn request_repaint(&self) {
-	self.ctx.request_repaint();
+        self.ctx.request_repaint();
     }
 }
 
@@ -116,7 +119,7 @@ impl TimingDiagnostics {
         self.avg_diag_cycle_time += elapsed / self.diagnostic_proc_cycles;
         self.max_diag_cycle_time = self.max_diag_cycle_time.max(elapsed);
         self.min_diag_cycle_time = self.min_diag_cycle_time.min(elapsed);
-	self.diagnostic_proc_cycle += 1;
+        self.diagnostic_proc_cycle += 1;
         self.diagnostic_proc_cycle == self.diagnostic_proc_cycles
     }
 }

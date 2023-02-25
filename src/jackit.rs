@@ -1,5 +1,4 @@
-use crate::app;
-use crate::comm::{self, Jack, Update, Point};
+use crate::comm::{self, Jack, Point, TimingDiagnostics, Update};
 use anyhow::{bail, Result};
 use jack;
 use ringbuf;
@@ -16,6 +15,7 @@ enum JackClient {
 }
 
 pub struct JackIt {
+    pub timing: TimingDiagnostics,
     client: Option<JackClient>,
     atomics: Vec<Arc<AtomicBool>>,
     port_names: Vec<String>,
@@ -33,6 +33,7 @@ impl JackIt {
             .collect();
 
         JackIt {
+            timing: TimingDiagnostics::new(0),
             client: Some(JackClient::Passive(client)),
             atomics,
             port_names,
@@ -136,7 +137,7 @@ impl JackIt {
         client.sample_rate()
     }
 
-    pub fn update(&mut self, updts: &Vec<Update>, state: &mut app::State) {
+    pub fn update(&mut self, updts: &Vec<Update>) {
         for updt in updts {
             match updt {
                 Update::Jack(Jack::Connected {
@@ -149,7 +150,6 @@ impl JackIt {
                                 .get(idx)
                                 .expect("jackit pause_port atomics to have idx of matched port")
                                 .store(*connected, std::sync::atomic::Ordering::Relaxed);
-                            state.ports[idx].enabled = *connected;
                         } else {
                             eprintln!(
                                 "Error: JackIt attempted to locate port {port_name} in {:?}",
@@ -158,7 +158,7 @@ impl JackIt {
                         }
                     }
                 }
-                Update::Jack(Jack::TimingDiagnostics(d)) => state.jack_process_diagnostics = *d,
+                Update::Jack(Jack::TimingDiagnostics(d)) => self.timing = *d,
                 _ => (),
             }
         }
@@ -174,7 +174,7 @@ struct PortProc {
 struct JProcessor {
     port_procs: Vec<PortProc>,
     bus: comm::Bus,
-    timing_diagnostics: comm::TimingDiagnostics,
+    timing_diagnostics: TimingDiagnostics,
 }
 
 impl JProcessor {
@@ -182,15 +182,16 @@ impl JProcessor {
         JProcessor {
             port_procs,
             bus,
-            timing_diagnostics: comm::TimingDiagnostics::new(diagnostic_proc_cycles),
+            timing_diagnostics: TimingDiagnostics::new(diagnostic_proc_cycles),
         }
     }
 }
 
 impl jack::ProcessHandler for JProcessor {
     fn process(&mut self, _: &jack::Client, ps: &jack::ProcessScope) -> jack::Control {
-        self.timing_diagnostics.record();
-
+        if cfg!(debug_assertions) {
+            self.timing_diagnostics.record();
+        }
         let frame_time = ps.last_frame_time();
         let n_frames = ps.n_frames();
         let fs = (0..n_frames).map(|i| frame_time + i);
@@ -210,10 +211,12 @@ impl jack::ProcessHandler for JProcessor {
                 }
             });
 
-        if self.timing_diagnostics.done() {
-            self.bus.send(Update::Jack(Jack::TimingDiagnostics(
-                self.timing_diagnostics,
-            )));
+        if cfg!(debug_assertions) {
+            if self.timing_diagnostics.done() {
+                self.bus.send(Update::Jack(Jack::TimingDiagnostics(
+                    self.timing_diagnostics,
+                )));
+            }
         }
 
         jack::Control::Continue
