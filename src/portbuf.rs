@@ -30,7 +30,7 @@ impl ArrayView {
         self.len += 1;
     }
 
-    fn get_last(&mut self, n: usize) -> &[Point] {
+    fn last_n(&mut self, n: usize) -> &[Point] {
         if n > self.len {
             &self.arr[0..self.len]
         } else {
@@ -137,16 +137,16 @@ impl PortBuf {
                         Err(_) => break,
                     };
                     for (idx, point) in rb.pop_iter().take(n_samples).enumerate() {
-                        sum += point[0];
+                        sum += point[1];
                         // aggregate every agg_bin_size
                         // TODO need to compute agg t by looking at current frame time and adding
                         // idx sample times - 0.5 agg_bin_size samples to it.
                         if ((idx + 1) % agg_bin_size) == 0 {
-                            buf.agg.push([sum / agg_bin_size as f64, point[1]]);
+                            buf.agg.push([point[0], sum / agg_bin_size as f64]);
                             sum = 0.0;
                         }
                         buf.raw.push(point);
-                        fft_tmp_buf[fft_idx] = point[0];
+                        fft_tmp_buf[fft_idx] = point[1];
                         fft_idx += 1;
                     }
                 }
@@ -220,6 +220,11 @@ impl PortBuf {
             }
         }
     }
+
+    pub fn raw_n(&self, n: usize) -> Vec<Point> {
+	let mut buf = self.buf.lock().expect("PortBuf raw_n lock to not be poisoned");
+	buf.raw.last_n(n).to_vec()
+    }
 }
 
 #[cfg(test)]
@@ -232,12 +237,12 @@ mod tests {
         av.push([2.0, 2.0]);
         av.push([3.0, 3.0]);
 
-        let points = av.get_last(2);
+        let points = av.last_n(2);
         assert!(points.len() == 2);
 
         av.push([4.0, 4.0]);
 
-        let points = av.get_last(2);
+        let points = av.last_n(2);
         assert!(points.len() == 1);
         let p1 = points[0];
         assert!(p1[0] == 4.0 && p1[1] == 4.0);

@@ -203,8 +203,8 @@ impl jack::ProcessHandler for JProcessor {
                 pp.enabled.load(std::sync::atomic::Ordering::Relaxed)
             })
             .for_each(|pp| {
-                for (x, t) in std::iter::zip(pp.port.as_slice(ps), fs.clone()) {
-                    match pp.rb.push([*x as f64, t as f64]) {
+                for (t, x) in std::iter::zip(pp.port.as_slice(ps), fs.clone()) {
+                    match pp.rb.push([x as f64, *t as f64]) {
                         Ok(()) => (),
                         Err(_) => panic!("Could not push to RingBuffer, buffer full"),
                     }
