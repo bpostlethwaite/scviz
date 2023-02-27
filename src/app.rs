@@ -2,18 +2,18 @@ use crate::comm;
 use crate::jackit;
 use crate::portbuf;
 
-use egui::plot::{Line, Plot, PlotPoints};
+use egui::plot::{Line, Plot, PlotBounds, PlotPoints};
 
-pub struct TemplateApp {
+pub struct TemplateApp<const N: usize> {
     // sub-systems
     jackit: jackit::JackIt,
-    portbufs: Vec<portbuf::PortBuf>,
+    portbufs: Vec<portbuf::PortBuf<N>>,
     bus: comm::Bus,
-    plots: Vec<Box<dyn XPlot>>,
+    plots: Vec<Box<dyn XPlot<N>>>,
 }
 
-impl TemplateApp {
-    pub fn new(bus: comm::Bus, jackit: jackit::JackIt, portbufs: Vec<portbuf::PortBuf>) -> Self {
+impl<const N: usize> TemplateApp<N> {
+    pub fn new(bus: comm::Bus, jackit: jackit::JackIt, portbufs: Vec<portbuf::PortBuf<N>>) -> Self {
         TemplateApp {
             jackit,
             portbufs,
@@ -23,7 +23,7 @@ impl TemplateApp {
     }
 }
 
-impl eframe::App for TemplateApp {
+impl<const N: usize> eframe::App for TemplateApp<N> {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let updates = &self.bus.updates(false);
         self.jackit.update(updates);
@@ -31,25 +31,25 @@ impl eframe::App for TemplateApp {
             pb.update(updates);
         }
 
-	// plot controller
-	for updt in updates {
-	    match updt {
+        // plot controller
+        for updt in updates {
+            match updt {
                 comm::Update::Jack(comm::Jack::Connected {
                     connected,
                     port_names,
                 }) => {
-		    if *connected {
-			self.plots = vec![Box::new(Scope::new(port_names.clone()))]
+                    if *connected {
+                        self.plots = vec![Box::new(Scope::new(port_names.clone()))]
                     } else {
-			self.plots = vec![];
-		    }
-		},
-		_ => (),
-	    }
-	}
-	// for plt in &mut self.plots {
-	//     plt.update(updates)
-	// }
+                        self.plots = vec![];
+                    }
+                }
+                _ => (),
+            }
+        }
+        // for plt in &mut self.plots {
+        //     plt.update(updates)
+        // }
 
         if cfg!(debug_assertions) {
             egui::SidePanel::right("Diagnostics")
@@ -57,10 +57,10 @@ impl eframe::App for TemplateApp {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-	    for plt in &mut self.plots {
-		plt.plot(ui, &self.portbufs);
-	    }
-	});
+            for plt in &mut self.plots {
+                plt.plot(ui, &self.portbufs);
+            }
+        });
     }
 
     fn on_exit(&mut self) {
@@ -70,35 +70,40 @@ impl eframe::App for TemplateApp {
     }
 }
 
-trait XPlot {
-    fn plot(&mut self, ui: &mut egui::Ui, bufs: &Vec<portbuf::PortBuf>);
+trait XPlot<const N: usize> {
+    fn plot(&mut self, ui: &mut egui::Ui, bufs: &Vec<portbuf::PortBuf<N>>);
     fn update(&mut self, updts: &Vec<comm::Update>);
 }
 
 struct Scope {
     port_names: Vec<String>,
-    sample_window: usize
+    time_window: f64,
 }
 
 impl Scope {
     fn new(port_names: Vec<String>) -> Self {
-        Scope { port_names, sample_window: 1024 }
+        Scope {
+            port_names,
+            time_window: 0.0025, // 400hz sine wave period
+        }
     }
 }
 
-impl XPlot for Scope {
-    fn plot(&mut self, ui: &mut egui::Ui, portbufs: &Vec<portbuf::PortBuf>) {
-	ui.add(egui::Slider::new(&mut self.sample_window, 64..=1024).text("My value"));
-        let mut lines: Vec<Line> = self
+impl<const N: usize> XPlot<N> for Scope {
+    fn plot(&mut self, ui: &mut egui::Ui, portbufs: &Vec<portbuf::PortBuf<N>>) {
+        ui.add(egui::Slider::new(&mut self.time_window, 5.0e-4..=0.05).text("My value"));
+        let lines: Vec<Line> = self
             .port_names
             .iter()
             .filter_map(|port_name| portbufs.iter().find(|pb| &pb.name == port_name))
-            .map(|pb| Line::new(PlotPoints::new(pb.raw_n(self.sample_window))))
+            .map(|pb| Line::new(PlotPoints::new(pb.time_window(self.time_window, 0.0))))
             .collect();
         Plot::new("my_plot").view_aspect(2.0).show(ui, |plot_ui| {
-            if lines.len() > 0 {
-                plot_ui.line(lines.remove(0));
-            }
+            lines.into_iter().for_each(|line| plot_ui.line(line));
+            plot_ui.set_plot_bounds(PlotBounds::from_min_max(
+                [0.0, -1.1],
+                [self.time_window, 1.1],
+            ))
         });
     }
 
@@ -122,7 +127,11 @@ impl XPlot for Scope {
     }
 }
 
-pub fn diagnostics(ui: &mut egui::Ui, portbufs: &Vec<portbuf::PortBuf>, jackit: &jackit::JackIt) {
+pub fn diagnostics<const N: usize>(
+    ui: &mut egui::Ui,
+    portbufs: &Vec<portbuf::PortBuf<N>>,
+    jackit: &jackit::JackIt,
+) {
     ui.heading("Port Connections");
     for portbuf::PortBuf { name, enabled, .. } in portbufs {
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {

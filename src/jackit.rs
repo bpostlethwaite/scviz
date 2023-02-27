@@ -1,4 +1,4 @@
-use crate::comm::{self, Jack, Point, TimingDiagnostics, Update};
+use crate::comm::{self, Jack, TimingDiagnostics, Update};
 use anyhow::{bail, Result};
 use jack;
 use ringbuf;
@@ -51,7 +51,7 @@ impl JackIt {
         let mut rb_cons = vec![];
 
         for _ in 0..self.port_names.len() {
-            let ring_buf = ringbuf::HeapRb::<Point>::new(
+            let ring_buf = ringbuf::HeapRb::<f32>::new(
                 (client.buffer_size() as usize) * config.ringbuf_cycle_size,
             );
             let (prod, cons) = ring_buf.split();
@@ -192,9 +192,6 @@ impl jack::ProcessHandler for JProcessor {
         if cfg!(debug_assertions) {
             self.timing_diagnostics.record();
         }
-        let frame_time = ps.last_frame_time();
-        let n_frames = ps.n_frames();
-        let fs = (0..n_frames).map(|i| frame_time + i);
 
         self.port_procs
             .iter_mut()
@@ -203,11 +200,10 @@ impl jack::ProcessHandler for JProcessor {
                 pp.enabled.load(std::sync::atomic::Ordering::Relaxed)
             })
             .for_each(|pp| {
-                for (t, x) in std::iter::zip(pp.port.as_slice(ps), fs.clone()) {
-                    match pp.rb.push([x as f64, *t as f64]) {
-                        Ok(()) => (),
-                        Err(_) => panic!("Could not push to RingBuffer, buffer full"),
-                    }
+                let slice = pp.port.as_slice(ps);
+                let n_pushed = pp.rb.push_slice(slice);
+                if slice.len() != n_pushed {
+                    panic!("jackit::process did not push full slice into ringbuf");
                 }
             });
 
