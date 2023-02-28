@@ -2,7 +2,7 @@ mod app;
 mod comm;
 mod jackit;
 mod portbuf;
-mod arrayview;
+
 
 use anyhow::Result;
 use app::TemplateApp;
@@ -54,7 +54,7 @@ fn main() -> Result<()> {
                     let mut pb = portbuf::PortBuf::new(idx, name, enabled, jack_sample_rate);
                     pb.activate(portbuf::PortBufProcessConfig {
                         rb,
-                        agg_bin_size: jack_buf_size as usize, // aggregate every jack process buffer                       ,
+                        agg_bin_size: comm::AGG_SAMPLE_SIZE, 
                         bus: bus.clone(),
                     })
                     .expect("PortBuf Activate to Succeed");

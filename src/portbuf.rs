@@ -1,12 +1,7 @@
-use crate::comm::{self, TimingDiagnostics, Update};
+use crate::comm::{self, TimingDiagnostics, Update, FFT_BUF_SIZE};
 use anyhow::Result;
 use std::sync::{Arc, Mutex};
 
-const AGG_SAMPLES: usize = 1024;
-const AGG_LEN: usize = 65536;
-const RAW_LEN: usize = 65536;
-const FFT_SIG_BUF_SIZE: usize = 8192;
-const FFT_SPEC_BUF_SIZE: usize = 4097;
 
 #[derive(Debug)]
 struct ArrayView<const N: usize> {
@@ -155,7 +150,6 @@ impl<const N: usize> ArrayView<N> {
         vec
     }
 
-    #[allow(dead_code)]
     fn size(&self) -> usize {
         N
     }
@@ -223,7 +217,7 @@ impl<const N: usize> PortBuf<N> {
         let port_idx = self.port_idx;
 
         let join_handle = std::thread::spawn(move || {
-            let mut fft_tmp_buf: [f32; FFT_SIG_BUF_SIZE * 2] = [0.0; FFT_SIG_BUF_SIZE * 2];
+            let mut fft_tmp_buf: [f32; FFT_BUF_SIZE * 2] = [0.0; FFT_BUF_SIZE * 2];
             let mut timing_diagnostics = TimingDiagnostics::new(comm::TIMING_DIAGNOSTIC_CYCLES);
 	    let mut fft_idx = 0;
             loop {
@@ -246,8 +240,8 @@ impl<const N: usize> PortBuf<N> {
 
                 let mut n_samples = rb.len();
                 // Prevent fft_buf overflow
-                if rb.len() >= FFT_SIG_BUF_SIZE * 2 {
-                    n_samples = FFT_SIG_BUF_SIZE * 2;
+                if rb.len() >= FFT_BUF_SIZE * 2 {
+                    n_samples = FFT_BUF_SIZE * 2;
                 }
 
                 // round take down to divisible amount of agg_bin_size - usize division is a floor op
@@ -276,7 +270,7 @@ impl<const N: usize> PortBuf<N> {
                 }
 
                 // Handle FFT - for now just reset the index
-                if fft_tmp_buf.len() > FFT_SIG_BUF_SIZE {
+                if fft_tmp_buf.len() > FFT_BUF_SIZE {
                     fft_idx = 0;
                 }
 

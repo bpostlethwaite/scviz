@@ -7,10 +7,18 @@ pub type RingConsumer = ringbuf::consumer::Consumer<f32, Arc<ringbuf::HeapRb<f32
 pub const RINGBUF_CYCLE_SIZE: usize = 10;
 
 /// How many point pairs can the underlying port buffers hold before overwriting
-pub const PORT_BUF_SIZE: usize = 65536;
+pub const PORT_BUF_SIZE: usize = 65_536;
+
+/// How many samples to aggregate over for the time series buffer. For efficiency
+/// chosen to match the typical jack_buffer_size.
+pub const AGG_SAMPLE_SIZE: usize = 1024;
 
 /// How long should the port buff wait between ring buffer reads
 pub const PORT_BUF_WAIT_DUR: std::time::Duration = std::time::Duration::from_millis(1);
+
+/// The number of FFT Samples to aggregate over. Divisible by 1024 and a power of 2
+/// for greatest efficiency
+pub const FFT_BUF_SIZE: usize = 16_384;
 
 /// The size of the main channel bus
 pub const CHANNEL_BUS_SIZE: usize = 10;

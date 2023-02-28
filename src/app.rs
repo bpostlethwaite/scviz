@@ -1,6 +1,7 @@
-use crate::comm;
+use crate::comm::{self, AGG_SAMPLE_SIZE, PORT_BUF_SIZE, FFT_BUF_SIZE};
 use crate::jackit;
 use crate::portbuf;
+use std::time::Duration;
 
 use egui::plot::{Line, Plot, PlotBounds, PlotPoints};
 
@@ -127,6 +128,11 @@ impl<const N: usize> XPlot<N> for Scope {
     }
 }
 
+macro_rules! label {
+    ( $ui:expr, $($arg:tt)* ) => {$ui.label(format!($($arg)*))};
+}
+
+
 pub fn diagnostics<const N: usize>(
     ui: &mut egui::Ui,
     portbufs: &Vec<portbuf::PortBuf<N>>,
@@ -144,29 +150,37 @@ pub fn diagnostics<const N: usize>(
         });
     }
     ui.separator();
-    ui.heading("Jack Process Diagnostics");
-    ui.label(format!(
-        "Avg Process Time: {:?}",
-        jackit.timing.avg_diag_cycle_time
-    ));
-    ui.label(format!(
-        "Max Process Time: {:?}",
-        jackit.timing.max_diag_cycle_time
-    ));
+    ui.heading("Runtime Configuration");
+    let sample_rate = jackit.sample_rate() as f64;
+    let sample_time = 1.0 / sample_rate;
+    let raw_buf_time_len = PORT_BUF_SIZE as f64 * sample_time;
+    let agg_buf_time_len = (AGG_SAMPLE_SIZE * PORT_BUF_SIZE) as f64 * sample_time;
+    let fft_bin_size = sample_rate / FFT_BUF_SIZE as f64;
+    let fft_hi_freq = sample_rate / 2.0 - fft_bin_size;    
+    label!(ui, "sample rate = {sample_rate}");
+    label!(ui, "sample time = {sample_time}");
+    label!(ui, "raw buffer time length = {raw_buf_time_len}");
+    label!(ui, "agg buffer time length = {agg_buf_time_len}");
+    label!(ui, "fft bin size = {fft_bin_size}");
+    label!(ui, "fft bandwidth range = [0, {fft_hi_freq}]");
 
-    ui.heading("PortBuf Process Diagnostics");
+    ui.separator();
+    ui.heading("Jack Process Diagnostics");
+    label!(ui, "Avg Process Time: {:?}", jackit.timing.avg_diag_cycle_time);
+    label!(ui, "Max Process Time: {:?}", jackit.timing.max_diag_cycle_time);
+
+    ui.separator();    
+    ui.heading("PortBuf Process Diagnostics");    
     for portbuf::PortBuf { name, timing, .. } in portbufs {
         ui.label(name);
-        ui.label(format!(
-            "Avg Process Time: {:?}",
-            timing.avg_diag_cycle_time
-        ));
-        ui.label(format!(
+        label!(ui, "Avg Process Time: {:?}", timing.avg_diag_cycle_time);
+        label!(ui,
             "Max Process Time: {:?}",
             timing.max_diag_cycle_time
-        ));
+        );
     }
 
+    ui.separator();    
     ui.heading("PortBuf Capacity");
     for portbuf in portbufs {
         ui.label(&portbuf.name);
@@ -184,4 +198,19 @@ pub fn diagnostics<const N: usize>(
             ));
         });
     }
+}
+
+struct Hertz {}
+
+struct RuntimeStats {
+    sample_rate: usize,
+    sample_time: Duration,
+    raw_buf_time_len: u32,
+    fft_max_freq: Hertz,
+    fft_min_freq: Hertz,
+    fft_bin_size: Hertz,
+
+}
+
+pub fn runtime_stats() {
 }
