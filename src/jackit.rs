@@ -203,7 +203,7 @@ impl jack::ProcessHandler for JProcessor {
                 let slice = pp.port.as_slice(ps);
                 let n_pushed = pp.rb.push_slice(slice);
                 if slice.len() != n_pushed {
-                    panic!("jackit::process did not push full slice into ringbuf");
+                    panic!("jackit::process did not push full slice into ringbuf: slice_len = {} pushed = {}", slice.len(), n_pushed);
                 }
             });
 

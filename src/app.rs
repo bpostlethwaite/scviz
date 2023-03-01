@@ -1,7 +1,6 @@
 use crate::comm::{self, AGG_SAMPLE_SIZE, PORT_BUF_SIZE, FFT_BUF_SIZE};
 use crate::jackit;
 use crate::portbuf;
-use std::time::Duration;
 
 use egui::plot::{Line, Plot, PlotBounds, PlotPoints};
 
@@ -149,6 +148,7 @@ pub fn diagnostics<const N: usize>(
             }
         });
     }
+
     ui.separator();
     ui.heading("Runtime Configuration");
     let sample_rate = jackit.sample_rate() as f64;
@@ -156,7 +156,7 @@ pub fn diagnostics<const N: usize>(
     let raw_buf_time_len = PORT_BUF_SIZE as f64 * sample_time;
     let agg_buf_time_len = (AGG_SAMPLE_SIZE * PORT_BUF_SIZE) as f64 * sample_time;
     let fft_bin_size = sample_rate / FFT_BUF_SIZE as f64;
-    let fft_hi_freq = sample_rate / 2.0 - fft_bin_size;    
+    let fft_hi_freq = sample_rate / 2.0 - fft_bin_size;
     label!(ui, "sample rate = {sample_rate}");
     label!(ui, "sample time = {sample_time}");
     label!(ui, "raw buffer time length = {raw_buf_time_len}");
@@ -169,8 +169,8 @@ pub fn diagnostics<const N: usize>(
     label!(ui, "Avg Process Time: {:?}", jackit.timing.avg_diag_cycle_time);
     label!(ui, "Max Process Time: {:?}", jackit.timing.max_diag_cycle_time);
 
-    ui.separator();    
-    ui.heading("PortBuf Process Diagnostics");    
+    ui.separator();
+    ui.heading("PortBuf Process Diagnostics");
     for portbuf::PortBuf { name, timing, .. } in portbufs {
         ui.label(name);
         label!(ui, "Avg Process Time: {:?}", timing.avg_diag_cycle_time);
@@ -180,11 +180,11 @@ pub fn diagnostics<const N: usize>(
         );
     }
 
-    ui.separator();    
+    ui.separator();
     ui.heading("PortBuf Capacity");
     for portbuf in portbufs {
         ui.label(&portbuf.name);
-        let (agg, raw) = portbuf.capacity();
+        let (agg, raw) = portbuf.curr_idx();
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
             ui.label("Agg: ");
             ui.add(egui::widgets::ProgressBar::new(
@@ -198,19 +198,4 @@ pub fn diagnostics<const N: usize>(
             ));
         });
     }
-}
-
-struct Hertz {}
-
-struct RuntimeStats {
-    sample_rate: usize,
-    sample_time: Duration,
-    raw_buf_time_len: u32,
-    fft_max_freq: Hertz,
-    fft_min_freq: Hertz,
-    fft_bin_size: Hertz,
-
-}
-
-pub fn runtime_stats() {
 }
