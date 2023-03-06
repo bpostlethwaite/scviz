@@ -1,6 +1,7 @@
 use crate::comm::{self, TimingDiagnostics, Update, FFT_BUF_SIZE};
 use anyhow::Result;
-use rustfft::{num_complex::Complex, FftPlanner};
+use realfft::RealFftPlanner;
+use rustfft::num_complex::Complex;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug)]
@@ -37,39 +38,38 @@ impl<const N: usize> ArrayView<N> {
 
     // TODO: Optimize push_slice
     fn push_slice(&mut self, xs: &[f32]) {
-	for x in xs.iter() {
+        for x in xs.iter() {
             self.arr[self.idx] = *x;
             if self.idx + 1 == N {
-		self.idx = 0;
-		self.cycled = true;
+                self.idx = 0;
+                self.cycled = true;
             } else {
-		self.idx = self.idx + 1;
+                self.idx = self.idx + 1;
             }
-	}
+        }
     }
 
     fn push_slice_with_rise(&mut self, xs: &[f32]) {
-	for &x in xs.iter() {
+        for &x in xs.iter() {
             if self.cycled || self.idx > 1 {
-		if self.rise_cycle && x < self.x_thresh {
+                if self.rise_cycle && x < self.x_thresh {
                     self.rise_cycle = false;
-		}
+                }
 
-		if !self.rise_cycle && x > self.x_thresh {
+                if !self.rise_cycle && x > self.x_thresh {
                     self.rise_cycle = true;
                     self.rising_idx = self.idx;
-		}
+                }
             }
 
             self.arr[self.idx] = x;
             if self.idx + 1 == N {
-		self.idx = 0;
-		self.cycled = true;
+                self.idx = 0;
+                self.cycled = true;
             } else {
-		self.idx = self.idx + 1;
+                self.idx = self.idx + 1;
             }
-	}
-
+        }
     }
 
     /// As Push but also sets last idx when x value crosses
@@ -198,6 +198,7 @@ impl<const N: usize> ArrayView<N> {
 struct TriBuf<const N: usize> {
     agg: ArrayView<N>,
     raw: ArrayView<N>,
+    fft: ArrayView<N>,
 }
 
 pub struct PortBufProcessConfig {
@@ -228,6 +229,7 @@ impl<const N: usize> PortBuf<N> {
             buf: Arc::new(Mutex::new(TriBuf {
                 agg: ArrayView::new(),
                 raw: ArrayView::new(),
+                fft: ArrayView::new(),
             })),
             join_handle: None,
             quit_tx: None,
@@ -251,13 +253,15 @@ impl<const N: usize> PortBuf<N> {
 
         let port_idx = self.port_idx;
         let join_handle = std::thread::spawn(move || {
-            //let mut planner = FftPlanner::new();
-            //let fft = planner.plan_fft_forward(FFT_BUF_SIZE);
-            let mut data_buf: [f32; FFT_BUF_SIZE] = [0.0; FFT_BUF_SIZE];
-            let mut fft_buf: [Complex<f32>; FFT_BUF_SIZE] = [Complex {
+            let mut planner = RealFftPlanner::<f32>::new();
+            let fft = planner.plan_fft_forward(FFT_BUF_SIZE);
+            let mut in_data_buf: [f32; FFT_BUF_SIZE] = [0.0; FFT_BUF_SIZE];
+            let mut fft_sig_buf: [f32; FFT_BUF_SIZE] = [0.0; FFT_BUF_SIZE];
+            let mut fft_spec_buf: [Complex<f32>; FFT_BUF_SIZE / 2 + 1] = [Complex {
                 re: 0.0f32,
                 im: 0.0f32,
-            }; FFT_BUF_SIZE];
+            };
+                FFT_BUF_SIZE / 2 + 1];
             let mut fft_scratch_buf: [Complex<f32>; FFT_BUF_SIZE] = [Complex {
                 re: 0.0f32,
                 im: 0.0f32,
@@ -291,10 +295,9 @@ impl<const N: usize> PortBuf<N> {
                 let n_samples = agg_chunks * agg_bin_size;
 
                 // fill up our internal data buffer
-                let data_slice = &mut data_buf[0..n_samples];
-		{
-                    rb.pop_slice(data_slice);
-		}
+                let data_slice = &mut in_data_buf[0..n_samples];
+                rb.pop_slice(data_slice);
+
                 // calculate the aggs
                 let aggs: Vec<f32> = data_slice
                     .chunks_exact(agg_bin_size)
@@ -302,26 +305,41 @@ impl<const N: usize> PortBuf<N> {
                     .collect();
 
                 // load and possibly calculate the ffts
-		for x in data_slice.iter() {
-		    fft_buf[fft_idx] = Complex::new(*x, 0.0);
-		    fft_idx += 1;
-		}
-		if fft_idx == FFT_BUF_SIZE {
-		    fft_idx = 0;
-		}
+                for x in data_slice.iter() {
+                    fft_sig_buf[fft_idx] = *x;
+                    fft_idx += 1;
+                }
+                if fft_idx == FFT_BUF_SIZE {
+                    fft.process_with_scratch(
+                        &mut fft_sig_buf,
+                        &mut fft_spec_buf,
+                        &mut fft_scratch_buf,
+                    )
+			.expect("realfft to process successfully");
 
-		// Unlock Buf
+                    let mut buf = match arcbuf.lock() {
+                        Ok(buf) => buf,
+                        Err(_) => break,
+                    };
+
+		    let norm = FFT_BUF_SIZE as f32;
+                    for c in &fft_spec_buf {
+                        buf.fft.push((c / norm).norm_sqr());
+                    }
+
+                    fft_idx = 0;
+                }
+
+                // Unlock Buf
                 {
                     let mut buf = match arcbuf.lock() {
                         Ok(buf) => buf,
                         Err(_) => break,
                     };
                     buf.raw.push_slice_with_rise(data_slice);
-		    buf.agg.push_slice(&aggs);
-		    //buf.fft.push_slice(fft_buf);
+                    buf.agg.push_slice(&aggs);
                 }
-		// Relinquish Lock
-
+                // Relinquish Lock
                 if cfg!(debug_assertions) {
                     if timing_diagnostics.done() {
                         bus.send(Update::PortBuf(comm::PortBuf::TimingDiagnostics {
@@ -356,12 +374,12 @@ impl<const N: usize> PortBuf<N> {
         println!("PortBuf Stopped");
     }
 
-    pub fn curr_idx(&self) -> (usize, usize) {
+    pub fn curr_idx(&self) -> (usize, usize, usize) {
         let buf = self
             .buf
             .lock()
             .expect("PortBuf.capcity lock to not be poisoned");
-        (buf.agg.idx(), buf.raw.idx())
+        (buf.agg.idx(), buf.raw.idx(), buf.fft.idx())
     }
 
     pub fn update(&mut self, updts: &Vec<Update>) {
@@ -394,9 +412,23 @@ impl<const N: usize> PortBuf<N> {
         let mut buf = self
             .buf
             .lock()
-            .expect("PortBuf raw_n lock to not be poisoned");
+            .expect("PortBuf raw buf lock to not be poisoned");
         buf.raw
             .last_nt_rising(samples_per_period, t_start, sample_time)
+    }
+
+    pub fn freq_window(&self) -> Vec<[f64; 2]> {
+        let buf = self
+            .buf
+            .lock()
+            .expect("PortBuf freq buf lock to not be poisoned");
+        let bin_size = self.sample_rate as f64 / FFT_BUF_SIZE as f64;
+        buf.fft
+            .last_n(FFT_BUF_SIZE / 2)
+            .iter()
+            .enumerate()
+            .map(|(i, x)| [i as f64 * bin_size, *x as f64])
+            .collect()
     }
 }
 
@@ -469,10 +501,10 @@ mod tests {
 
         pbuf.quit();
         let buf = pbuf.buf.lock().expect("tribuf to unlock");
-        assert!(buf.agg.len() == 2);
+        assert!(buf.agg.size() == 2);
         assert!(buf.agg.arr[0] == 1.0);
         assert!(buf.agg.arr[1] == 5.0);
-        assert!(buf.raw.len() == 4);
+        assert!(buf.raw.size() == 4);
         assert!(prod.len() == 1);
     }
 }

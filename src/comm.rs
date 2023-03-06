@@ -18,7 +18,7 @@ pub const PORT_BUF_WAIT_DUR: std::time::Duration = std::time::Duration::from_mil
 
 /// The number of FFT Samples to aggregate over. Divisible by 1024 and a power of 2
 /// for greatest efficiency
-pub const FFT_BUF_SIZE: usize = 16_384;
+pub const FFT_BUF_SIZE: usize = 8192;
 
 /// The size of the main channel bus
 pub const CHANNEL_BUS_SIZE: usize = 10;

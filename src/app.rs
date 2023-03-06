@@ -1,8 +1,12 @@
-use crate::comm::{self, AGG_SAMPLE_SIZE, PORT_BUF_SIZE, FFT_BUF_SIZE};
+use crate::comm::{self, AGG_SAMPLE_SIZE, FFT_BUF_SIZE, PORT_BUF_SIZE};
 use crate::jackit;
 use crate::portbuf;
 
 use egui::plot::{Line, Plot, PlotBounds, PlotPoints};
+
+macro_rules! label {
+    ( $ui:expr, $($arg:tt)* ) => {$ui.label(format!($($arg)*))};
+}
 
 pub struct TemplateApp<const N: usize> {
     // sub-systems
@@ -39,7 +43,13 @@ impl<const N: usize> eframe::App for TemplateApp<N> {
                     port_names,
                 }) => {
                     if *connected {
-                        self.plots = vec![Box::new(Scope::new(port_names.clone()))]
+                        self.plots = vec![
+                            Box::new(Scope::new(port_names.clone())),
+                            Box::new(FreqScope::new(
+                                port_names.clone(),
+                                self.jackit.sample_rate() as f64,
+                            )),
+                        ]
                     } else {
                         self.plots = vec![];
                     }
@@ -57,8 +67,13 @@ impl<const N: usize> eframe::App for TemplateApp<N> {
         }
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            for plt in &mut self.plots {
-                plt.plot(ui, &self.portbufs);
+	    let panel_rect = ui.available_rect_before_wrap();
+	    let plot_height = panel_rect.height() / self.plots.len() as f32 - 1.0;
+	    let plot_size = &[panel_rect.width(), plot_height];
+            for (i, plt) in self.plots.iter_mut().enumerate() {
+		ui.allocate_ui(plot_size.into(), |ui| {
+                    plt.plot(ui, &self.portbufs);
+		});
             }
         });
     }
@@ -91,14 +106,14 @@ impl Scope {
 
 impl<const N: usize> XPlot<N> for Scope {
     fn plot(&mut self, ui: &mut egui::Ui, portbufs: &Vec<portbuf::PortBuf<N>>) {
-        ui.add(egui::Slider::new(&mut self.time_window, 5.0e-4..=0.05).text("My value"));
+        ui.add(egui::Slider::new(&mut self.time_window, 5.0e-4..=0.01).text("Time Window"));
         let lines: Vec<Line> = self
             .port_names
             .iter()
             .filter_map(|port_name| portbufs.iter().find(|pb| &pb.name == port_name))
             .map(|pb| Line::new(PlotPoints::new(pb.time_window(self.time_window, 0.0))))
             .collect();
-        Plot::new("my_plot").view_aspect(2.0).show(ui, |plot_ui| {
+        Plot::new("Scope").show(ui, |plot_ui| {
             lines.into_iter().for_each(|line| plot_ui.line(line));
             plot_ui.set_plot_bounds(PlotBounds::from_min_max(
                 [0.0, -1.1],
@@ -127,10 +142,56 @@ impl<const N: usize> XPlot<N> for Scope {
     }
 }
 
-macro_rules! label {
-    ( $ui:expr, $($arg:tt)* ) => {$ui.label(format!($($arg)*))};
+struct FreqScope {
+    port_names: Vec<String>,
+    sample_rate: f64,
 }
 
+impl FreqScope {
+    fn new(port_names: Vec<String>, sample_rate: f64) -> Self {
+        FreqScope {
+            port_names,
+            sample_rate,
+        }
+    }
+}
+
+impl<const N: usize> XPlot<N> for FreqScope {
+    fn plot(&mut self, ui: &mut egui::Ui, portbufs: &Vec<portbuf::PortBuf<N>>) {
+        let lines: Vec<Line> = self
+            .port_names
+            .iter()
+            .filter_map(|port_name| portbufs.iter().find(|pb| &pb.name == port_name))
+            .map(|pb| Line::new(PlotPoints::new(pb.freq_window())))
+            .collect();
+        Plot::new("FreqScope").show(ui, |plot_ui| {
+            lines.into_iter().for_each(|line| plot_ui.line(line));
+            // plot_ui.set_plot_bounds(PlotBounds::from_min_max(
+            //     [0.0, 0.0],
+            //     [0.5 * self.sample_rate, 1.1],
+            // ))
+        });
+    }
+
+    fn update(&mut self, updts: &Vec<comm::Update>) {
+        for updt in updts {
+            match updt {
+                comm::Update::Jack(comm::Jack::Connected {
+                    connected: _,
+                    port_names,
+                }) => {
+                    self.port_names.push(
+                        port_names
+                            .first()
+                            .expect("Scope.update port name update to contain port name")
+                            .clone(),
+                    );
+                }
+                _ => (),
+            }
+        }
+    }
+}
 
 pub fn diagnostics<const N: usize>(
     ui: &mut egui::Ui,
@@ -166,35 +227,46 @@ pub fn diagnostics<const N: usize>(
 
     ui.separator();
     ui.heading("Jack Process Diagnostics");
-    label!(ui, "Avg Process Time: {:?}", jackit.timing.avg_diag_cycle_time);
-    label!(ui, "Max Process Time: {:?}", jackit.timing.max_diag_cycle_time);
+    label!(
+        ui,
+        "Avg Process Time: {:?}",
+        jackit.timing.avg_diag_cycle_time
+    );
+    label!(
+        ui,
+        "Max Process Time: {:?}",
+        jackit.timing.max_diag_cycle_time
+    );
 
     ui.separator();
     ui.heading("PortBuf Process Diagnostics");
     for portbuf::PortBuf { name, timing, .. } in portbufs {
         ui.label(name);
         label!(ui, "Avg Process Time: {:?}", timing.avg_diag_cycle_time);
-        label!(ui,
-            "Max Process Time: {:?}",
-            timing.max_diag_cycle_time
-        );
+        label!(ui, "Max Process Time: {:?}", timing.max_diag_cycle_time);
     }
 
     ui.separator();
     ui.heading("PortBuf Capacity");
     for portbuf in portbufs {
         ui.label(&portbuf.name);
-        let (agg, raw) = portbuf.curr_idx();
+        let (agg, raw, fft) = portbuf.curr_idx();
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-            ui.label("Agg: ");
+            ui.label("agg: ");
             ui.add(egui::widgets::ProgressBar::new(
                 agg as f32 / comm::PORT_BUF_SIZE as f32,
             ));
         });
         ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
-            ui.label("Raw: ");
+            ui.label("raw: ");
             ui.add(egui::widgets::ProgressBar::new(
                 raw as f32 / comm::PORT_BUF_SIZE as f32,
+            ));
+        });
+        ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+            ui.label("fft: ");
+            ui.add(egui::widgets::ProgressBar::new(
+                fft as f32 / comm::PORT_BUF_SIZE as f32,
             ));
         });
     }
